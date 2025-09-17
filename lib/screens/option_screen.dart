@@ -1,10 +1,10 @@
+// screens/option_screen.dart
 import 'package:flutter/material.dart';
-import '../routes.dart';
 import '../services/navigation_service.dart';
+import '../services/auth_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class OptionsScreen extends StatefulWidget {
-  static const String routeName = '/options';
-
   const OptionsScreen({super.key});
 
   @override
@@ -15,6 +15,65 @@ class _OptionsScreenState extends State<OptionsScreen> {
   bool _notificationsEnabled = true;
   bool _soundEnabled = true;
   String _selectedTheme = '기본';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSettings();
+  }
+
+  // 설정 불러오기
+  Future<void> _loadSettings() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      setState(() {
+        _notificationsEnabled = prefs.getBool('notifications_enabled') ?? true;
+        _soundEnabled = prefs.getBool('sound_enabled') ?? true;
+        _selectedTheme = prefs.getString('selected_theme') ?? '기본';
+      });
+    } catch (e) {
+      print('설정 불러오기 실패: $e');
+    }
+  }
+
+  // 설정 저장
+  Future<void> _saveSetting(String key, dynamic value) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (value is bool) {
+        await prefs.setBool(key, value);
+      } else if (value is String) {
+        await prefs.setString(key, value);
+      }
+    } catch (e) {
+      print('설정 저장 실패: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('설정 저장에 실패했습니다.')));
+      }
+    }
+  }
+
+  // 로그아웃 처리
+  Future<void> _logout() async {
+    try {
+      await AuthService.clearToken();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('로그아웃되었습니다.')));
+        // 메인 화면으로 이동 (로그인 상태가 자동으로 체크됨)
+        NavigationService.pushAndRemoveUntil('/'); // Routes.main 사용
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('로그아웃 중 오류가 발생했습니다.')));
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -42,6 +101,12 @@ class _OptionsScreenState extends State<OptionsScreen> {
                     setState(() {
                       _notificationsEnabled = value;
                     });
+                    _saveSetting('notifications_enabled', value);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('알림 설정이 저장되었습니다.')),
+                      );
+                    }
                   },
                 ),
               ),
@@ -55,6 +120,12 @@ class _OptionsScreenState extends State<OptionsScreen> {
                     setState(() {
                       _soundEnabled = value;
                     });
+                    _saveSetting('sound_enabled', value);
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text('사운드 설정이 저장되었습니다.')),
+                      );
+                    }
                   },
                 ),
               ),
@@ -72,28 +143,24 @@ class _OptionsScreenState extends State<OptionsScreen> {
             SizedBox(height: 20),
             Card(
               child: ListTile(
-                title: Text('계정 정보'),
-                trailing: Icon(Icons.arrow_forward),
+                leading: Icon(Icons.logout),
+                title: Text('로그아웃'),
                 onTap: () {
-                  // 계정 정보 화면으로 이동
+                  _showLogoutDialog(context);
                 },
               ),
             ),
             Card(
               child: ListTile(
-                title: Text('도움말'),
-                trailing: Icon(Icons.arrow_forward),
-                onTap: () {
-                  // 도움말 화면으로 이동
-                },
-              ),
-            ),
-            Card(
-              child: ListTile(
+                leading: Icon(Icons.info),
                 title: Text('앱 정보'),
-                trailing: Icon(Icons.arrow_forward),
                 onTap: () {
-                  // 앱 정보 화면으로 이동
+                  showAboutDialog(
+                    context: context,
+                    applicationName: 'TRPG App',
+                    applicationVersion: 'v1.0.0',
+                    applicationLegalese: '© 2025 My TRPG Team',
+                  );
                 },
               ),
             ),
@@ -117,10 +184,20 @@ class _OptionsScreenState extends State<OptionsScreen> {
                 value: '기본',
                 groupValue: _selectedTheme,
                 onChanged: (value) {
-                  setState(() {
-                    _selectedTheme = value!;
-                  });
-                  Navigator.of(context).pop();
+                  if (value != null) {
+                    setState(() {
+                      _selectedTheme = value;
+                    });
+                    _saveSetting('selected_theme', value);
+                    if (mounted) {
+                      Navigator.of(context).pop();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('테마가 $_selectedTheme(으)로 변경되었습니다.'),
+                        ),
+                      );
+                    }
+                  }
                 },
               ),
               RadioListTile<String>(
@@ -128,10 +205,20 @@ class _OptionsScreenState extends State<OptionsScreen> {
                 value: '다크',
                 groupValue: _selectedTheme,
                 onChanged: (value) {
-                  setState(() {
-                    _selectedTheme = value!;
-                  });
-                  Navigator.of(context).pop();
+                  if (value != null) {
+                    setState(() {
+                      _selectedTheme = value;
+                    });
+                    _saveSetting('selected_theme', value);
+                    if (mounted) {
+                      Navigator.of(context).pop();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('테마가 $_selectedTheme(으)로 변경되었습니다.'),
+                        ),
+                      );
+                    }
+                  }
                 },
               ),
               RadioListTile<String>(
@@ -139,14 +226,51 @@ class _OptionsScreenState extends State<OptionsScreen> {
                 value: '라이트',
                 groupValue: _selectedTheme,
                 onChanged: (value) {
-                  setState(() {
-                    _selectedTheme = value!;
-                  });
-                  Navigator.of(context).pop();
+                  if (value != null) {
+                    setState(() {
+                      _selectedTheme = value;
+                    });
+                    _saveSetting('selected_theme', value);
+                    if (mounted) {
+                      Navigator.of(context).pop();
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text('테마가 $_selectedTheme(으)로 변경되었습니다.'),
+                        ),
+                      );
+                    }
+                  }
                 },
               ),
             ],
           ),
+        );
+      },
+    );
+  }
+
+  void _showLogoutDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Text('로그아웃'),
+          content: Text('정말 로그아웃하시겠습니까?'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+              },
+              child: Text('취소'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                _logout();
+              },
+              child: Text('로그아웃'),
+            ),
+          ],
         );
       },
     );

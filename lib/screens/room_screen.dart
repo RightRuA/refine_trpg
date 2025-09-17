@@ -1,25 +1,16 @@
 // screens/room_screen.dart
 import 'dart:math';
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import '../routes.dart';
-import '../services/navigation_service.dart';
-// 假设这些文件存在于你的项目中，并且路径正确
-// 如果不存在，你需要从旧项目复制它们或创建占位符
+import 'package:http/http.dart' as http;
 import '../models/room.dart';
-// import '../services/chat_service.dart'; // 暂时注释掉，如果需要再取消注释
-// import '../models/chat.dart'; // 暂时注释掉，如果需要再取消注释
-// import '../features/character_sheet/character_sheet_router.dart'; // 暂时注释掉
-// import '../widgets/chat_bubble_widget.dart'; // 暂时注释掉
-// import '../features/character_sheet/systems.dart'; // 暂时注释掉
-// import '../systems/core/dice.dart'; // 暂时注释掉
-// import '../systems/core/rules_engine.dart'; // 暂时注释掉
-// import '../systems/dnd5e/dnd5e_rules.dart'; // 暂时注释掉
-// import '../systems/coc7e/coc7e_rules.dart'; // 暂时注释掉
+import '../models/chat.dart';
+import '../widgets/chat_bubble_widget.dart';
+import '../services/navigation_service.dart';
+import 'dart:io';
+import 'dart:async';
 
 class RoomScreen extends StatefulWidget {
-  static const String routeName = '/room';
-
-  // 修改: 接收 Room 对象作为必需参数
   final Room room;
   const RoomScreen({super.key, required this.room});
 
@@ -28,106 +19,219 @@ class RoomScreen extends StatefulWidget {
 }
 
 class _RoomScreenState extends State<RoomScreen> {
-  // 使用 widget.room 作为当前房间
   late Room _room;
+  final String _baseUrl = 'http://localhost:11122';
+  final String _playerName = '플레이어';
 
-  // 暂时注释掉未实现的依赖项
-  // late final ChatService _chatService;
-  final String _playerName = '플레이어'; // 简化处理
-
-  // 移除 GlobalKey<ScaffoldState> _scaffoldKey
   final TextEditingController _chatController = TextEditingController();
-  // 暂时注释掉未实现的依赖项
-  // final List<ChatMessage> _messages = [];
+  final List<ChatMessage> _messages = [];
   final ScrollController _msgScroll = ScrollController();
 
-  // 简化状态
-  int? selectedCharacterIndex;
-  bool isRightDrawerOpen = false;
-  bool isLeftDrawerOpen = false;
+  // 상태 변수들
   bool isDicePanelOpen = false;
+  bool _isLoading = false;
+  bool _isChatPanelOpen = false;
 
-  // 简化处理
+  // 주사위 패널
   final List<int> diceFaces = [2, 4, 6, 8, 10, 20, 100];
   Map<int, int> diceCounts = {
     for (var f in [2, 4, 6, 8, 10, 20, 100]) f: 0,
     -1: 0,
   };
 
-  // 简化处理
-  late final String systemId;
-  // late final TrpgRules rules; // 暂时注释掉
-
-  // 简化处理
-  late Map<String, TextEditingController> statControllers;
-  late Map<String, TextEditingController> generalControllers;
-
   @override
   void initState() {
     super.initState();
-    // 使用传入的 room 对象
     _room = widget.room;
-
-    // 简化初始化
-    systemId = 'coc7e'; // 默认系统
-    // rules = systemId == 'dnd5e' ? Dnd5eRules() : Coc7eRules(); // 暂时注释掉
-
-    // 简化控制器初始化 (使用示例数据)
-    statControllers = {
-      'strength': TextEditingController(text: '10'),
-      'dexterity': TextEditingController(text: '10'),
-    };
-    generalControllers = {
-      'name': TextEditingController(text: 'Default Character'),
-      'HP': TextEditingController(text: '10'),
-    };
+    _loadChatMessages();
   }
 
-  // 简化方法
-  Map<String, dynamic> _collectCurrentData() {
-    return {
-      'stats': {
-        for (final e in statControllers.entries)
-          e.key: int.tryParse(e.value.text) ?? e.value.text,
-      },
-      'general': {
-        for (final e in generalControllers.entries)
-          e.key: int.tryParse(e.value.text) ?? e.value.text,
-      },
-    };
+  // ===== 채팅 서비스 로직 통합 시작 =====
+  Future<List<ChatMessage>> _getChatMessages(String roomId) async {
+    final response = await http.get(
+      Uri.parse('$_baseUrl/rooms/$roomId/chats/logs'),
+    );
+
+    if (response.statusCode == 200) {
+      final List<dynamic> data = json.decode(response.body);
+      return data.map((json) => ChatMessage.fromJson(json)).toList();
+    } else {
+      throw Exception('Failed to load chat messages');
+    }
   }
 
-  // 简化方法
-  Map<String, dynamic> _deriveCurrent() {
-    // 返回一些示例派生值
-    return {'hp': 10, 'mp': 5};
+  Future<void> _sendChatMessageToServer(
+    String roomId,
+    String sender,
+    String message,
+  ) async {
+    final response = await http.post(
+      Uri.parse('$_baseUrl/rooms/$roomId/chats'),
+      headers: {'Content-Type': 'application/json'},
+      body: json.encode({'sender': sender, 'message': message}),
+    );
+
+    if (response.statusCode != 201) {
+      throw Exception('Failed to send chat message');
+    }
+  }
+  // ===== 채팅 서비스 로직 통합 끝 =====
+
+  // 채팅 메시지 불러오기
+  Future<void> _loadChatMessages() async {
+    if (_room.id == null) return;
+
+    setState(() => _isLoading = true);
+    try {
+      final messages = await _getChatMessages(_room.id!);
+      if (mounted) {
+        setState(() {
+          _messages.clear();
+          _messages.addAll(messages);
+          _isLoading = false;
+        });
+        _scrollToBottom();
+      }
+    } on SocketException {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showErrorMessage('네트워크 연결을 확인해주세요.');
+      }
+    } on TimeoutException {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showErrorMessage('서버 응답 시간이 초과되었습니다.');
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showErrorMessage('채팅 메시지를 불러오는데 실패했습니다.');
+      }
+    }
   }
 
-  // 简化方法
-  void _handleSendClick() async {
+  // 채팅 메시지 전송
+  Future<void> _sendChatMessage() async {
     final text = _chatController.text.trim();
-    if (text.isEmpty) return;
+    if (text.isEmpty || _room.id == null) return;
 
-    // 简化处理
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('채팅 기능은 현재 비활성화되어 있습니다.')));
-    _chatController.clear();
+    try {
+      await _sendChatMessageToServer(_room.id!, _playerName, text);
+
+      if (mounted) {
+        setState(() {
+          _chatController.clear();
+        });
+
+        final newMessage = ChatMessage(
+          sender: _playerName,
+          content: text,
+          timestamp: DateTime.now(),
+        );
+
+        setState(() {
+          _messages.add(newMessage);
+        });
+        _scrollToBottom();
+        _showSuccessMessage('메시지가 전송되었습니다.');
+      }
+    } on SocketException {
+      if (mounted) {
+        _showErrorMessage('네트워크 연결을 확인해주세요.');
+      }
+    } on TimeoutException {
+      if (mounted) {
+        _showErrorMessage('서버 응답 시간이 초과되었습니다.');
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorMessage('메시지 전송에 실패했습니다.');
+      }
+    }
+  }
+
+  // 주사위 결과 전송
+  Future<void> _sendDiceResult(String diceResult) async {
+    if (_room.id == null) return;
+
+    try {
+      await _sendChatMessageToServer(_room.id!, _playerName, diceResult);
+
+      final newMessage = ChatMessage(
+        sender: _playerName,
+        content: diceResult,
+        timestamp: DateTime.now(),
+      );
+
+      if (mounted) {
+        setState(() {
+          _messages.add(newMessage);
+        });
+        _scrollToBottom();
+        _showSuccessMessage('주사위 결과가 전송되었습니다.');
+      }
+    } catch (e) {
+      if (mounted) {
+        _showErrorMessage('주사위 결과 전송에 실패했습니다.');
+      }
+    }
+  }
+
+  // 채팅 패널 열기
+  void _openChatPanel() {
+    setState(() {
+      _isChatPanelOpen = true;
+    });
+  }
+
+  // 채팅 패널 닫기
+  void _closeChatPanel() {
+    setState(() {
+      _isChatPanelOpen = false;
+    });
+  }
+
+  // 스크롤을 맨 아래로 이동
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_msgScroll.hasClients) {
+        _msgScroll.animateTo(
+          _msgScroll.position.maxScrollExtent,
+          duration: Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+  }
+
+  // 에러 메시지 표시
+  void _showErrorMessage(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: Colors.red),
+      );
+    }
+  }
+
+  // 성공 메시지 표시
+  void _showSuccessMessage(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), backgroundColor: Colors.green),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final screenHeight = MediaQuery.of(context).size.height;
-
     return Scaffold(
-      // 移除 key: _scaffoldKey,
       appBar: AppBar(
-        title: Text('방: ${_room.name}'), // 使用房间名
+        title: Text('방: ${_room.name}'),
         backgroundColor: Color(0xFF8C7853),
         leading: IconButton(
           icon: Icon(Icons.arrow_back),
           onPressed: () {
-            NavigationService.goBack(); // 使用 NavigationService 返回
+            NavigationService.goBack();
           },
         ),
       ),
@@ -149,7 +253,7 @@ class _RoomScreenState extends State<RoomScreen> {
                     ),
                     const SizedBox(height: 16),
                     Text(
-                      '방 ID: ${_room.id ?? 'Unknown'}', // 显示房间ID
+                      '방 ID: ${_room.id ?? 'Unknown'}',
                       style: TextStyle(color: Colors.grey[600], fontSize: 12),
                     ),
                   ],
@@ -157,15 +261,232 @@ class _RoomScreenState extends State<RoomScreen> {
               ),
             ),
           ),
-          // 하단 채팅 입력 영역 (VTT 위에 얹히지만 포인터 방해 없음)
+
+          // 채팅 패널
+          if (_isChatPanelOpen)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              top: 0,
+              child: Container(
+                color: Colors.white,
+                child: Column(
+                  children: [
+                    // 헤더
+                    Container(
+                      padding: EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(color: Colors.grey[300]!),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          IconButton(
+                            icon: Icon(Icons.close),
+                            onPressed: _closeChatPanel,
+                          ),
+                          SizedBox(width: 8),
+                          Text(
+                            '채팅',
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    // 채팅 메시지 목록
+                    Expanded(
+                      child: _isLoading
+                          ? Center(child: CircularProgressIndicator())
+                          : ListView.builder(
+                              controller: _msgScroll,
+                              itemCount: _messages.length,
+                              padding: EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 8,
+                              ),
+                              itemBuilder: (context, i) {
+                                final message = _messages[i];
+                                return ChatBubbleWidget(
+                                  playerName: message.sender,
+                                  message: message.content,
+                                );
+                              },
+                            ),
+                    ),
+                    // 입력 영역
+                    Container(
+                      padding: EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        border: Border(
+                          top: BorderSide(color: Colors.grey[300]!),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: _chatController,
+                              decoration: InputDecoration(
+                                hintText: '메시지를 입력하세요...',
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 16,
+                                  vertical: 8,
+                                ),
+                                border: OutlineInputBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                  borderSide: BorderSide(
+                                    color: Colors.grey.shade400,
+                                  ),
+                                ),
+                                isDense: true,
+                              ),
+                              onSubmitted: (_) => _sendChatMessage(),
+                            ),
+                          ),
+                          SizedBox(width: 8),
+                          IconButton(
+                            icon: Icon(Icons.send, color: Colors.blue),
+                            onPressed: _sendChatMessage,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+
+          // 주사위 패널
+          if (isDicePanelOpen)
+            Positioned(
+              right: 16,
+              bottom: 80,
+              child: SizedBox(
+                width: 300,
+                child: Material(
+                  elevation: 8,
+                  borderRadius: BorderRadius.circular(16),
+                  color: Colors.white,
+                  child: Padding(
+                    padding: const EdgeInsets.all(16.0),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          '주사위 패널',
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text('방 ID: ${_room.id}'),
+                        const SizedBox(height: 8),
+                        GridView.count(
+                          crossAxisCount: 4,
+                          shrinkWrap: true,
+                          mainAxisSpacing: 8,
+                          crossAxisSpacing: 8,
+                          children: diceFaces.map((face) {
+                            return GestureDetector(
+                              onTap: () => setState(
+                                () => diceCounts[face] = diceCounts[face]! + 1,
+                              ),
+                              onSecondaryTap: () => setState(
+                                () => diceCounts[face] = max(
+                                  0,
+                                  diceCounts[face]! - 1,
+                                ),
+                              ),
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  border: Border.all(),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Stack(
+                                  alignment: Alignment.center,
+                                  children: [
+                                    Text('d$face'),
+                                    if (diceCounts[face]! > 0)
+                                      Positioned(
+                                        top: 4,
+                                        right: 4,
+                                        child: CircleAvatar(
+                                          radius: 10,
+                                          child: Text(
+                                            '${diceCounts[face]}',
+                                            style: const TextStyle(
+                                              fontSize: 12,
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
+                        const SizedBox(height: 8),
+                        ElevatedButton(
+                          onPressed: () async {
+                            final lines = <String>[];
+                            int totalAll = 0;
+
+                            diceCounts.forEach((face, count) {
+                              if (face <= 0 || count <= 0) return;
+                              final results = <int>[];
+                              for (int i = 0; i < count; i++) {
+                                results.add(Random().nextInt(face) + 1);
+                              }
+                              final total = results.reduce((a, b) => a + b);
+                              totalAll += total;
+                              lines.add(
+                                '${count}d$face: ${results.join(', ')} = $total',
+                              );
+                            });
+
+                            final msg = lines.isEmpty
+                                ? '주사위 선택이 없습니다.'
+                                : '[주사위]\n${lines.join('\n')}\n총합: $totalAll';
+
+                            // 주사위 결과를 채팅으로 전송
+                            await _sendDiceResult(msg);
+
+                            if (mounted) {
+                              setState(() {
+                                isDicePanelOpen = false;
+                                diceCounts = {
+                                  for (var f in diceFaces) f: 0,
+                                  -1: 0,
+                                };
+                              });
+                            }
+                          },
+                          child: const Text('굴리기'),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              setState(() => isDicePanelOpen = false),
+                          child: const Text('닫기'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+
+          // 하단 채팅 입력 영역
           Column(
             children: [
-              // 가운데 빈 레이어가 포인터를 막지 않도록 IgnorePointer 처리
               Expanded(
-                child: IgnorePointer(
-                  ignoring: true,
-                  child: const SizedBox.expand(),
-                ),
+                child: IgnorePointer(ignoring: true, child: SizedBox.expand()),
               ),
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -190,12 +511,12 @@ class _RoomScreenState extends State<RoomScreen> {
                           ),
                           isDense: true,
                         ),
-                        onSubmitted: (_) => _handleSendClick(),
+                        onSubmitted: (_) => _sendChatMessage(),
                       ),
                     ),
                     const SizedBox(width: 8),
                     InkWell(
-                      // onTap: _openChatPanel, // 暂时注释掉
+                      onTap: _openChatPanel,
                       borderRadius: BorderRadius.circular(20),
                       child: Container(
                         width: 40,
@@ -235,7 +556,7 @@ class _RoomScreenState extends State<RoomScreen> {
                     ),
                     const SizedBox(width: 8),
                     InkWell(
-                      onTap: _handleSendClick,
+                      onTap: _sendChatMessage,
                       borderRadius: BorderRadius.circular(20),
                       child: Container(
                         width: 40,
@@ -258,56 +579,6 @@ class _RoomScreenState extends State<RoomScreen> {
               ),
             ],
           ),
-          // 주사위 패널 (简化显示)
-          if (isDicePanelOpen)
-            Positioned(
-              right: 16,
-              bottom: 80, // 调整位置避免与输入框重叠
-              child: SizedBox(
-                width: 300,
-                child: Material(
-                  elevation: 8,
-                  borderRadius: BorderRadius.circular(16),
-                  color: Colors.white,
-                  child: Padding(
-                    padding: const EdgeInsets.all(16.0),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Text(
-                          '주사위 패널',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text('방 ID: ${_room.id}'),
-                        const SizedBox(height: 8),
-                        ElevatedButton(
-                          onPressed: () {
-                            // 简化处理: 显示一个随机数
-                            final randomResult = Random().nextInt(20) + 1;
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              SnackBar(content: Text('d20 결과: $randomResult')),
-                            );
-                            setState(() {
-                              isDicePanelOpen = false;
-                            });
-                          },
-                          child: const Text('d20 굴리기'),
-                        ),
-                        TextButton(
-                          onPressed: () =>
-                              setState(() => isDicePanelOpen = false),
-                          child: const Text('닫기'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
         ],
       ),
     );
@@ -317,13 +588,6 @@ class _RoomScreenState extends State<RoomScreen> {
   void dispose() {
     _chatController.dispose();
     _msgScroll.dispose();
-    // Dispose controllers
-    for (var controller in statControllers.values) {
-      controller.dispose();
-    }
-    for (var controller in generalControllers.values) {
-      controller.dispose();
-    }
     super.dispose();
   }
 }

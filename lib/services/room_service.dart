@@ -1,8 +1,11 @@
+// services/room_service.dart
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/browser_client.dart' as http_browser;
+import 'dart:io'; // 네트워크 예외 처리용
+import 'dart:async'; // 타임아웃 처리용
 import '../models/room.dart';
 
 class RoomServiceException implements Exception {
@@ -64,15 +67,43 @@ class RoomService {
     try {
       final dynamic decoded = jsonDecode(responseBody);
       if (decoded is Map<String, dynamic>) {
-        final message = decoded['message'];
+        // 다양한 에러 형식 처리
+        if (decoded.containsKey('errors') && decoded['errors'] is List) {
+          final errors = decoded['errors'] as List;
+          if (errors.isNotEmpty) {
+            final firstError = errors[0];
+            if (firstError is Map<String, dynamic> &&
+                firstError.containsKey('message')) {
+              return firstError['message'] as String;
+            }
+          }
+        }
+
+        final message =
+            decoded['message'] ??
+            decoded['error'] ??
+            decoded['detail'] ??
+            '요청을 처리할 수 없습니다.';
         if (message is String) {
           return message;
         }
       }
     } catch (e) {
-      return responseBody;
+      return responseBody.isNotEmpty ? responseBody : '요청을 처리할 수 없습니다.';
     }
     return '요청을 처리할 수 없습니다.';
+  }
+
+  // 타임아웃이 있는 HTTP 요청
+  static Future<http.Response> _requestWithTimeout(
+    Future<http.Response> request, {
+    Duration timeout = const Duration(seconds: 10),
+  }) async {
+    try {
+      return await request.timeout(timeout);
+    } on TimeoutException {
+      throw RoomServiceException('서버 응답 시간이 초과되었습니다.', statusCode: 408);
+    }
   }
 
   // 새로운 방 생성
@@ -80,10 +111,12 @@ class RoomService {
     final uri = Uri.parse('$_baseUrl/rooms');
     final client = _client();
     try {
-      final res = await client.post(
-        uri,
-        headers: await _headers(withAuth: true),
-        body: jsonEncode(room.toCreateJson()),
+      final res = await _requestWithTimeout(
+        client.post(
+          uri,
+          headers: await _headers(withAuth: true),
+          body: jsonEncode(room.toCreateJson()),
+        ),
       );
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -93,6 +126,12 @@ class RoomService {
 
       final errorMessage = _parseErrorMessage(res.body);
       throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow; // 이미 RoomServiceException인 경우 그대로 전달
+    } catch (e) {
+      throw RoomServiceException('방 생성 중 오류가 발생했습니다: ${e.toString()}');
     } finally {
       // client.close(); 싱글톤이므로 닫지 않음
     }
@@ -103,9 +142,8 @@ class RoomService {
     final uri = Uri.parse('$_baseUrl/rooms/${Uri.encodeComponent(roomId)}');
     final client = _client();
     try {
-      final res = await client.get(
-        uri,
-        headers: await _headers(withAuth: true),
+      final res = await _requestWithTimeout(
+        client.get(uri, headers: await _headers(withAuth: true)),
       );
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -115,8 +153,73 @@ class RoomService {
 
       final errorMessage = _parseErrorMessage(res.body);
       throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow;
+    } catch (e) {
+      throw RoomServiceException('방 정보 조회 중 오류가 발생했습니다: ${e.toString()}');
     } finally {
       // client.close(); 싱글톤이므로 닫지 않음
+    }
+  }
+
+  // 방 목록 조회 (페이지네이션 지원)
+  static Future<List<Room>> getRooms({int page = 1, int limit = 20}) async {
+    final uri = Uri.parse('$_baseUrl/rooms?page=$page&limit=$limit');
+    final client = _client();
+    try {
+      final res = await _requestWithTimeout(
+        client.get(uri, headers: await _headers(withAuth: true)),
+      );
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final List<dynamic> body = jsonDecode(res.body);
+        return body
+            .map((e) => Room.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+
+      final errorMessage = _parseErrorMessage(res.body);
+      throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow;
+    } catch (e) {
+      throw RoomServiceException('방 목록 조회 중 오류가 발생했습니다: ${e.toString()}');
+    } finally {
+      // client.close();
+    }
+  }
+
+  // 방 검색
+  static Future<List<Room>> searchRooms(String keyword) async {
+    final encodedKeyword = Uri.encodeQueryComponent(keyword);
+    final uri = Uri.parse('$_baseUrl/rooms/search?q=$encodedKeyword');
+    final client = _client();
+    try {
+      final res = await _requestWithTimeout(
+        client.get(uri, headers: await _headers(withAuth: true)),
+      );
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final List<dynamic> body = jsonDecode(res.body);
+        return body
+            .map((e) => Room.fromJson(e as Map<String, dynamic>))
+            .toList();
+      }
+
+      final errorMessage = _parseErrorMessage(res.body);
+      throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow;
+    } catch (e) {
+      throw RoomServiceException('방 검색 중 오류가 발생했습니다: ${e.toString()}');
+    } finally {
+      // client.close();
     }
   }
 
@@ -130,10 +233,12 @@ class RoomService {
     );
     final client = _client();
     try {
-      final res = await client.post(
-        uri,
-        headers: await _headers(withAuth: true),
-        body: jsonEncode({'password': password}),
+      final res = await _requestWithTimeout(
+        client.post(
+          uri,
+          headers: await _headers(withAuth: true),
+          body: jsonEncode({'password': password}),
+        ),
       );
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -143,6 +248,12 @@ class RoomService {
 
       final errorMessage = _parseErrorMessage(res.body);
       throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow;
+    } catch (e) {
+      throw RoomServiceException('방 입장 중 오류가 발생했습니다: ${e.toString()}');
     } finally {
       // client.close(); 싱글톤이므로 닫지 않음
     }
@@ -155,9 +266,8 @@ class RoomService {
     );
     final client = _client();
     try {
-      final res = await client.post(
-        uri,
-        headers: await _headers(withAuth: true),
+      final res = await _requestWithTimeout(
+        client.post(uri, headers: await _headers(withAuth: true)),
       );
 
       if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -166,6 +276,12 @@ class RoomService {
 
       final errorMessage = _parseErrorMessage(res.body);
       throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow;
+    } catch (e) {
+      throw RoomServiceException('방 퇴장 중 오류가 발생했습니다: ${e.toString()}');
     } finally {
       // client.close(); 싱글톤이므로 닫지 않음
     }
@@ -176,9 +292,8 @@ class RoomService {
     final uri = Uri.parse('$_baseUrl/rooms/${Uri.encodeComponent(roomId)}');
     final client = _client();
     try {
-      final res = await client.delete(
-        uri,
-        headers: await _headers(withAuth: true),
+      final res = await _requestWithTimeout(
+        client.delete(uri, headers: await _headers(withAuth: true)),
       );
 
       // 204 No Content는 성공적으로 삭제됨을 의미
@@ -188,8 +303,53 @@ class RoomService {
 
       final errorMessage = _parseErrorMessage(res.body);
       throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow;
+    } catch (e) {
+      throw RoomServiceException('방 삭제 중 오류가 발생했습니다: ${e.toString()}');
     } finally {
       // client.close(); 싱글톤이므로 닫지 않음
     }
+  }
+
+  // 방 정보 업데이트
+  static Future<Room> updateRoom(
+    String roomId,
+    Map<String, dynamic> updates,
+  ) async {
+    final uri = Uri.parse('$_baseUrl/rooms/${Uri.encodeComponent(roomId)}');
+    final client = _client();
+    try {
+      final res = await _requestWithTimeout(
+        client.patch(
+          uri,
+          headers: await _headers(withAuth: true),
+          body: jsonEncode(updates),
+        ),
+      );
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        final body = jsonDecode(res.body) as Map<String, dynamic>;
+        return Room.fromJson(body);
+      }
+
+      final errorMessage = _parseErrorMessage(res.body);
+      throw RoomServiceException(errorMessage, statusCode: res.statusCode);
+    } on SocketException {
+      throw RoomServiceException('네트워크 연결을 확인해주세요.');
+    } on RoomServiceException {
+      rethrow;
+    } catch (e) {
+      throw RoomServiceException('방 정보 업데이트 중 오류가 발생했습니다: ${e.toString()}');
+    } finally {
+      // client.close();
+    }
+  }
+
+  // 앱 종료 시 리소스 정리
+  static void dispose() {
+    closeClient();
   }
 }

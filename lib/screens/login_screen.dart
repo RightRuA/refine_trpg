@@ -1,3 +1,4 @@
+// screens/login_screen.dart
 import 'package:flutter/material.dart';
 import '../routes.dart';
 import '../services/navigation_service.dart';
@@ -22,28 +23,29 @@ class _LoginScreenState extends State<LoginScreen> {
 
     setState(() => _isLoading = true);
     try {
-      final success = await AuthService.login(
+      final result = await AuthService.login(
         email: _email,
         password: _password,
       );
       if (!mounted) return;
-      if (success) {
+
+      if (result['success'] == true) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('로그인 성공')));
+        ).showSnackBar(SnackBar(content: Text(result['message'] ?? '로그인 성공')));
         // 로그인 성공 시 메인 화면으로 이동
-        NavigationService.navigateTo(Routes.main);
+        NavigationService.pushAndRemoveUntil(Routes.main);
       } else {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('로그인 실패: 이메일/비밀번호를 확인하세요.')));
+        ).showSnackBar(SnackBar(content: Text(result['message'] ?? '로그인 실패')));
       }
     } catch (e) {
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text('로그인 중 오류 발생: $e')));
+      ).showSnackBar(SnackBar(content: Text('로그인 중 오류 발생: ${e.toString()}')));
     } finally {
-      setState(() => _isLoading = false);
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -54,7 +56,7 @@ class _LoginScreenState extends State<LoginScreen> {
         title: Text('로그인'),
         centerTitle: true,
         backgroundColor: Color(0xFF8C7853),
-        // leading 속성 전체 제거로 백버튼 제거
+        automaticallyImplyLeading: false, // 백버튼 제거
       ),
       body: Padding(
         padding: const EdgeInsets.all(16.0),
@@ -74,7 +76,10 @@ class _LoginScreenState extends State<LoginScreen> {
                 onSaved: (v) => _email = v?.trim() ?? '',
                 validator: (v) {
                   if (v == null || v.isEmpty) return '이메일을 입력하세요';
-                  if (!v.contains('@')) return '유효한 이메일을 입력하세요';
+                  final emailRegex = RegExp(
+                    r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$',
+                  );
+                  if (!emailRegex.hasMatch(v)) return '유효한 이메일을 입력하세요';
                   return null;
                 },
               ),

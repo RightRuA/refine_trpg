@@ -1,21 +1,116 @@
+// screens/create_room_screen.dart
 import 'package:flutter/material.dart';
 import '../routes.dart';
+import '../models/room.dart';
+import '../services/room_service.dart';
 import '../services/navigation_service.dart';
+import 'dart:io'; // SocketException용
+import 'dart:async'; // TimeoutException용
 
 class CreateRoomScreen extends StatefulWidget {
-  static const String routeName = '/create-room';
-
   const CreateRoomScreen({super.key});
 
   @override
-  _CreateRoomScreenState createState() => _CreateRoomScreenState();
+  State<CreateRoomScreen> createState() => _CreateRoomScreenState();
 }
 
 class _CreateRoomScreenState extends State<CreateRoomScreen> {
-  // 폼 유효성 검사를 위한 키
   final _formKey = GlobalKey<FormState>();
+
+  // 화면 상태 변수 (폼에 바인딩)
   String _roomName = '';
-  int _maxPlayers = 4;
+  String _password = '';
+  int _capacity = 2; // 백엔드 최소값 2로 변경
+
+  bool _isLoading = false; // API 호출 중 로딩 인디케이터 표시
+
+  // 인원 수 감소 (최소 2명)
+  void _decrementCapacity() {
+    if (_capacity > 2) {
+      setState(() {
+        _capacity--;
+      });
+    }
+  }
+
+  // 인원 수 증가 (최대 8명)
+  void _incrementCapacity() {
+    if (_capacity < 8) {
+      setState(() {
+        _capacity++;
+      });
+    }
+  }
+
+  /// 폼 제출: RoomService.createRoom() 호출
+  Future<void> _submitForm() async {
+    if (!_formKey.currentState!.validate()) return;
+    _formKey.currentState!.save();
+    setState(() => _isLoading = true);
+
+    try {
+      final newRoom = Room(
+        name: _roomName,
+        password: _password,
+        maxParticipants: _capacity,
+      );
+
+      final created = await RoomService.createRoom(newRoom);
+
+      if (!mounted) return;
+
+      // 필수: id가 null이거나 빈 문자열이면 에러 처리
+      if (created.id == null || created.id!.isEmpty) {
+        throw Exception('서버가 생성된 방의 UUID를 반환하지 않았습니다.');
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('방 생성 성공! ${created.name}')));
+
+      // 생성된 방으로 이동
+      NavigationService.navigateTo(Routes.room, arguments: created);
+    } on RoomServiceException catch (e) {
+      if (!mounted) return;
+
+      String errorMessage = '방 생성 실패';
+      if (e.message.contains('INVALID_MAX_PARTICIPANTS')) {
+        errorMessage = '인원 수는 2~8명 사이만 가능합니다';
+      } else if (e.message.contains('PASSWORD_REQUIRED')) {
+        errorMessage = '비밀번호는 필수 입력값입니다';
+      } else if (e.message.contains('INVALID_ROOM_NAME')) {
+        errorMessage = '방 이름은 1~50자로 입력해주세요';
+      } else {
+        errorMessage = '방 생성 실패: ${e.message}';
+      }
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(errorMessage)));
+    } on SocketException {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('네트워크 연결을 확인해주세요.')));
+    } on TimeoutException {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('서버 응답 시간이 초과되었습니다.')));
+    } catch (e) {
+      if (!mounted) return;
+
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('방 생성 중 오류가 발생했습니다.')));
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -26,69 +121,98 @@ class _CreateRoomScreenState extends State<CreateRoomScreen> {
         leading: IconButton(
           icon: Icon(Icons.arrow_back),
           onPressed: () {
-            // 이전 화면으로 돌아가기
             NavigationService.goBack();
           },
         ),
       ),
-      body: Padding(
-        padding: const EdgeInsets.all(16.0),
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
         child: Form(
           key: _formKey,
           child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // 1) 방 이름 입력
               TextFormField(
                 decoration: InputDecoration(
-                  labelText: '방 제목',
+                  labelText: '방 이름 (1~50자)',
                   border: OutlineInputBorder(),
                 ),
-                // 입력된 방 제목 저장
-                onSaved: (value) => _roomName = value?.trim() ?? '',
-                // 방 제목 필수 입력 검증
-                validator: (value) {
-                  if (value == null || value.isEmpty) {
-                    return '방 제목을 입력하세요';
+                maxLength: 50, // 백엔드 maxLength 50 반영
+                onSaved: (val) => _roomName = val!.trim(),
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) {
+                    return '방 이름을 입력하세요.';
+                  }
+                  if (val.trim().length > 50) {
+                    return '방 이름은 50자 이내로 입력하세요';
                   }
                   return null;
                 },
               ),
-              SizedBox(height: 20),
-              Text('최대 플레이어 수: $_maxPlayers'),
-              // 플레이어 수 조절 슬라이더 (2~8명)
-              Slider(
-                value: _maxPlayers.toDouble(),
-                min: 2,
-                max: 8,
-                divisions: 6,
-                label: _maxPlayers.toString(),
-                onChanged: (value) {
-                  setState(() {
-                    _maxPlayers = value.toInt();
-                  });
+              SizedBox(height: 16),
+
+              // 2) 비밀번호 입력 (모든 방에 필수)
+              TextFormField(
+                decoration: InputDecoration(
+                  labelText: '비밀번호 (1~20자)',
+                  border: OutlineInputBorder(),
+                ),
+                obscureText: true,
+                maxLength: 20,
+                onSaved: (val) => _password = val!.trim(),
+                validator: (val) {
+                  if (val == null || val.trim().isEmpty) {
+                    return '비밀번호는 필수 입력값입니다';
+                  }
+                  if (val.trim().length > 20) {
+                    // ← trim() 후 길이 체크
+                    return '비밀번호는 1~20자여야 합니다';
+                  }
+                  return null;
                 },
               ),
-              SizedBox(height: 30),
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    // 폼 유효성 검사 후 방 생성
-                    if (_formKey.currentState!.validate()) {
-                      _formKey.currentState!.save();
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('방이 생성되었습니다: $_roomName')),
-                      );
-                      NavigationService.goBack();
-                    }
-                  },
-                  style: ElevatedButton.styleFrom(
-                    padding: EdgeInsets.symmetric(vertical: 14),
-                    backgroundColor: Color(0xFFD4AF37),
-                    foregroundColor: Color(0xFF2A3439),
+              SizedBox(height: 16),
+
+              // 3) 인원 수 선택 (2~8명)
+              Text('인원 수 ($_capacity 명)', style: TextStyle(fontSize: 16)),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.remove_circle_outline),
+                    onPressed: _capacity > 2 ? _decrementCapacity : null,
+                    color: _capacity <= 2 ? Colors.grey : null,
                   ),
-                  child: Text('방 만들기', style: TextStyle(fontSize: 18)),
-                ),
+                  SizedBox(width: 24),
+                  Text('$_capacity', style: TextStyle(fontSize: 20)),
+                  SizedBox(width: 24),
+                  IconButton(
+                    icon: Icon(Icons.add_circle_outline),
+                    onPressed: _capacity < 8 ? _incrementCapacity : null,
+                    color: _capacity >= 8 ? Colors.grey : null,
+                  ),
+                ],
               ),
+              Text(
+                '※ 최소 2명 ~ 최대 8명 가능',
+                style: TextStyle(color: Colors.grey, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 32),
+
+              // 4) 방 만들기 버튼
+              _isLoading
+                  ? Center(child: CircularProgressIndicator())
+                  : ElevatedButton(
+                      onPressed: _submitForm,
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Color(0xFFD4AF37),
+                        foregroundColor: Color(0xFF2A3439),
+                        padding: EdgeInsets.symmetric(vertical: 14),
+                      ),
+                      child: Text('방 만들기', style: TextStyle(fontSize: 18)),
+                    ),
             ],
           ),
         ),

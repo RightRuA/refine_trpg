@@ -1,3 +1,4 @@
+// models/room.dart
 class RoomParticipantSummary {
   final int id;
   final String name;
